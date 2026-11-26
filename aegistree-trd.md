@@ -169,33 +169,37 @@ AegisTree models decision logic as a directed tree. Execution starts at the root
 
 ```
 ┌───────────────────────────────┐
-│ ExpressionNode                │
+│ type: "Cel"                   │
 │ (payload.amount > 10000 USD)  │
 └───────────────────────────────┘
         │
    ┌────┴────┐
- [True]   [False]
+ ["true"] ["false"]
    │         │
    ▼         ▼
-JevJudgmentNode   OutcomeLeaf: ALLOW
+type: "Jev"     OutcomeLeaf: ALLOW
    │
-   ├── ON_MATCH      (high conf fraud)
-   ├── ON_NO_MATCH   (high conf safe)
-   └── ON_UNCERTAIN  (low conf / circuit open)
+   ├── "match"      (high conf fraud)
+   ├── "noMatch"    (high conf safe)
+   └── "uncertain"  (low conf / circuit open)
 ```
 
 ### Node Evaluation Semantics
 
-- **RegexNode** — Evaluates text against compiled linear-time-safe (RE2-compliant) regex. Captured groups populate the downstream `DecisionContext`.
-- **ExpressionNode** — Executes sandboxed Google CEL boolean expressions over payload fields and context variables.
-- **VelocityNode** — Queries distributed sliding-window counters (Redis) or local caches (Caffeine).
-- **JevJudgmentNode** — Sends structured prompts to `/v1/systemone`. Branches on returned probability:
-  - **ON_MATCH** — probability ≥ `tauHigh`
-  - **ON_NO_MATCH** — inverse probability meets the non-match threshold
-  - **ON_UNCERTAIN** — probability in the entropy band, or timeout/circuit-breaker
-- **CompositeNode** — Boolean combinations (`ALL`, `ANY`, `NOT`) with cost-aware short-circuiting.
-- **SwitchRouterNode** — Multi-way routing on equality, ranges, or string enums.
-- **OutcomeLeaf** — Terminal node producing a `DecisionOutcome` with audit context, reason codes, metadata, and a list of `ActionSpec` descriptors.
+Nodes are **generic**: a node has a `type` string, a `config` map, and a `branches` map (branch label → child). The engine resolves `type` through the `NodeEvaluator` registry — there is no hardcoded node hierarchy. Built-in evaluators are just default-registered plugins; applications register their own.
+
+**Built-in evaluators** (each returns a branch label):
+
+| Evaluator `type` | Behavior | Branch labels |
+|---|---|---|
+| `Regex` | Linear-time-safe (RE2-compliant) regex match; captured groups populate `DecisionContext` | `match` / `noMatch` |
+| `Cel` | Sandboxed Google CEL boolean expression over payload/context | `true` / `false` |
+| `Velocity` | Distributed sliding-window counter (Redis) or local cache (Caffeine) | `exceed` / `below` |
+| `Jev` | Sends a structured prompt to `/v1/systemone`; branches on returned probability | `match` / `noMatch` / `uncertain` |
+| `Composite` | Boolean combination (`ALL`/`ANY`/`NOT`) with cost-aware short-circuiting | `true` / `false` |
+| `Switch` | Multi-way routing on equality, ranges, or string enums | any configured labels |
+
+**Terminal node** (`type: "OutcomeLeaf"`): a node with an `outcome` field — no evaluator, no branches. It produces the `DecisionOutcome` (reason code, metadata, `ActionSpec` list).
 
 ## 5. Non-Functional Requirements, Performance & Scale SLAs
 
@@ -218,7 +222,7 @@ JevJudgmentNode   OutcomeLeaf: ALLOW
 
 ## 6. Declarative Strategy Schema (JSON)
 
-A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNode` is the DAG entry point. Strategies are versioned using [Semantic Versioning](https://semver.org) (`MAJOR.MINOR.PATCH`, e.g. `0.0.0`, `0.0.1`) — each edit creates a new immutable version, and publishing promotes a version to active.
+A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNode` is the DAG entry point. Strategies are versioned using [Semantic Versioning](https://semver.org) (`MAJOR.MINOR.PATCH`, e.g. `0.0.0`, `0.0.1`) — each edit creates a new immutable version, and publishing promotes a version to active. Outcomes are declared in the `outcomes` array (never hardcoded); each node has a `type` (resolved through the evaluator registry), a `config` map, and a `branches` map of branch labels.
 
 ```json
 {
@@ -226,79 +230,89 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
   "id": "risk_and_recommendation_v1",
   "version": "0.0.1",
   "description": "Universal Hybrid Strategy combining Fast Rules with Jev System One Ambiguity Resolution",
+  "outcomes": ["ALLOW", "BLOCK", "CHALLENGE", "ESCALATE", "RECOMMEND_TIER_A"],
   "metadata": {
     "owner": "risk-engineering-team"
   },
   "rootNode": {
     "id": "node_01_sanction_check",
-    "type": "RegexNode",
-    "description": "Check IBAN/Account against high-risk blocklist",
-    "targetField": "payload.accountNumber",
-    "pattern": "^(IR|KP|SY|CU)[0-9]{2}[A-Z0-9]{12,30}$",
-    "captureVariables": { "countryCode": "$1" },
-    "onMatch": {
-      "id": "leaf_block_sanction",
-      "type": "OutcomeLeaf",
-      "outcome": "BLOCK",
-      "reasonCode": "ERR_SANCTIONED_COUNTRY_PATTERN",
-      "metadata": { "riskLevel": "CRITICAL", "actionSource": "DETERMINISTIC_REGEX" },
-      "actions": [
-        { "actionType": "KAFKA_DISPATCH", "params": { "topic": "risk.compliance.alerts", "priority": "HIGH" } },
-        { "actionType": "FREEZE_ACCOUNT", "params": { "lockType": "TOTAL_LOCK" } }
-      ]
+    "type": "Regex",
+    "config": {
+      "targetField": "payload.accountNumber",
+      "pattern": "^(IR|KP|SY|CU)[0-9]{2}[A-Z0-9]{12,30}$",
+      "captureVariables": { "countryCode": "$1" }
     },
-    "onNoMatch": {
-      "id": "node_02_velocity_and_amount",
-      "type": "ExpressionNode",
-      "description": "Evaluate transaction amount thresholds and fast context parameters",
-      "expression": "payload.amount > 10000.00 || context.userRiskTier == 'HIGH_RISK'",
-      "onFalse": {
-        "id": "leaf_allow_deterministic",
+    "branches": {
+      "match": {
+        "id": "leaf_block_sanction",
         "type": "OutcomeLeaf",
-        "outcome": "ALLOW",
-        "reasonCode": "OK_FAST_PASS",
-        "metadata": { "confidenceScore": 1.0 },
-        "actions": []
+        "outcome": "BLOCK",
+        "reasonCode": "ERR_SANCTIONED_COUNTRY_PATTERN",
+        "metadata": { "riskLevel": "CRITICAL", "actionSource": "DETERMINISTIC_REGEX" },
+        "actions": [
+          { "actionType": "KAFKA_DISPATCH", "params": { "topic": "risk.compliance.alerts", "priority": "HIGH" } },
+          { "actionType": "FREEZE_ACCOUNT", "params": { "lockType": "TOTAL_LOCK" } }
+        ]
       },
-      "onTrue": {
-        "id": "node_03_jev_system_one_check",
-        "type": "JevJudgmentNode",
-        "description": "Escalate to Jev /v1/systemone on high-value/high-risk context",
-        "promptTemplate": "Analyze this transaction for fraud patterns... ${context.userHistorySummary} ${payload.rawJson}",
-        "judgmentType": "Noul",
-        "tauHigh": 0.85,
-        "tauLow": 0.15,
-        "timeoutMs": 250,
-        "failurePolicy": "FALLBACK_TO_UNCERTAIN",
-        "onMatch": {
-          "id": "leaf_challenge_fraud",
-          "type": "OutcomeLeaf",
-          "outcome": "CHALLENGE",
-          "reasonCode": "RISK_JEV_HIGH_PROBABILITY_FRAUD",
-          "metadata": { "riskLevel": "HIGH", "actionSource": "NEURAL_SYSTEM_ONE" },
-          "actions": [
-            { "actionType": "STEP_UP_AUTHENTICATION", "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" } }
-          ]
+      "noMatch": {
+        "id": "node_02_velocity_and_amount",
+        "type": "Cel",
+        "config": {
+          "expression": "payload.amount > 10000.00 || context.userRiskTier == 'HIGH_RISK'"
         },
-        "onNoMatch": {
-          "id": "leaf_recommend_vip",
-          "type": "OutcomeLeaf",
-          "outcome": "RECOMMEND_TIER_A",
-          "reasonCode": "OK_VERIFIED_HIGH_VALUE",
-          "metadata": { "vipEligible": true },
-          "actions": [
-            { "actionType": "APPLY_PROMO_CREDIT", "params": { "creditAmount": 50.0 } }
-          ]
-        },
-        "onUncertain": {
-          "id": "leaf_escalate_human_review",
-          "type": "OutcomeLeaf",
-          "outcome": "ESCALATE",
-          "reasonCode": "WARN_JEV_UNCERTAIN_AMBIGUITY",
-          "metadata": { "requiresManualAudit": true },
-          "actions": [
-            { "actionType": "CREATE_WORKFLOW_TICKET", "params": { "queue": "MANUAL_FRAUD_REVIEW" } }
-          ]
+        "branches": {
+          "false": {
+            "id": "leaf_allow_deterministic",
+            "type": "OutcomeLeaf",
+            "outcome": "ALLOW",
+            "reasonCode": "OK_FAST_PASS",
+            "metadata": { "confidenceScore": 1.0 },
+            "actions": []
+          },
+          "true": {
+            "id": "node_03_jev_system_one_check",
+            "type": "Jev",
+            "config": {
+              "promptTemplate": "Analyze this transaction for fraud patterns... ${context.userHistorySummary} ${payload.rawJson}",
+              "judgmentType": "Noul",
+              "tauHigh": 0.85,
+              "tauLow": 0.15,
+              "timeoutMs": 250,
+              "failurePolicy": "FALLBACK_TO_UNCERTAIN"
+            },
+            "branches": {
+              "match": {
+                "id": "leaf_challenge_fraud",
+                "type": "OutcomeLeaf",
+                "outcome": "CHALLENGE",
+                "reasonCode": "RISK_JEV_HIGH_PROBABILITY_FRAUD",
+                "metadata": { "riskLevel": "HIGH", "actionSource": "NEURAL_SYSTEM_ONE" },
+                "actions": [
+                  { "actionType": "STEP_UP_AUTHENTICATION", "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" } }
+                ]
+              },
+              "noMatch": {
+                "id": "leaf_recommend_vip",
+                "type": "OutcomeLeaf",
+                "outcome": "RECOMMEND_TIER_A",
+                "reasonCode": "OK_VERIFIED_HIGH_VALUE",
+                "metadata": { "vipEligible": true },
+                "actions": [
+                  { "actionType": "APPLY_PROMO_CREDIT", "params": { "creditAmount": 50.0 } }
+                ]
+              },
+              "uncertain": {
+                "id": "leaf_escalate_human_review",
+                "type": "OutcomeLeaf",
+                "outcome": "ESCALATE",
+                "reasonCode": "WARN_JEV_UNCERTAIN_AMBIGUITY",
+                "metadata": { "requiresManualAudit": true },
+                "actions": [
+                  { "actionType": "CREATE_WORKFLOW_TICKET", "params": { "queue": "MANUAL_FRAUD_REVIEW" } }
+                ]
+              }
+            }
+          }
         }
       }
     }
@@ -427,8 +441,8 @@ Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation end
 {
   "valid": false,
   "errors": [
-    { "code": "CYCLE_DETECTED", "message": "DAG contains a cycle", "nodeId": "node_x", "path": "rootNode.onMatch" },
-    { "code": "MISSING_UNCERTAIN", "message": "JevJudgmentNode lacks onUncertain", "nodeId": "node_jev" }
+    { "code": "CYCLE_DETECTED", "message": "DAG contains a cycle", "nodeId": "node_x", "path": "rootNode.branches.match" },
+    { "code": "MISSING_UNCERTAIN", "message": "Jev node lacks 'uncertain' branch", "nodeId": "node_jev" }
   ]
 }
 ```
@@ -505,15 +519,10 @@ Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation end
 ```kotlin
 package com.aegistree.core.ast
 
-import com.fasterxml.jackson.annotation.JsonSubTypes
-import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.time.Instant
 
-// Standardized typed decision outcomes emitted by AegisTree terminal leaves.
-enum class CoreOutcome {
-    ALLOW, BLOCK, CHALLENGE, RECOMMEND_TIER_A, RECOMMEND_TIER_B,
-    ROUTE_QUEUE, ESCALATE, REDACT_AND_FORWARD, CUSTOM
-}
+// NOTE: There is no outcome enum. Outcomes are domain-defined strings,
+// declared per-strategy in the `outcomes` list of the JSON document.
 
 // Side-effect descriptor queued for non-blocking async execution via SPI plugins.
 data class ActionSpec(
@@ -553,52 +562,40 @@ data class ExecutionTrace(
     val steps: MutableList<NodeTraceStep> = mutableListOf()
 )
 
-// Sealed AST base node.
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "type")
-@JsonSubTypes(
-    JsonSubTypes.Type(value = DecisionNode.RegexNode::class, name = "RegexNode"),
-    JsonSubTypes.Type(value = DecisionNode.ExpressionNode::class, name = "ExpressionNode"),
-    JsonSubTypes.Type(value = DecisionNode.JevJudgmentNode::class, name = "JevJudgmentNode"),
-    JsonSubTypes.Type(value = DecisionNode.OutcomeLeaf::class, name = "OutcomeLeaf")
+// Generic DAG node. No sealed hierarchy — `type` is an extension point resolved
+// through the NodeEvaluator registry. `branches` maps a branch label to a child node.
+data class Node(
+    val id: String,
+    val type: String,
+    val config: Map<String, Any?> = emptyMap(),
+    val branches: Map<String, Node> = emptyMap(),
+    // Terminal (OutcomeLeaf) fields — set only when this node is a leaf:
+    val outcome: String? = null,
+    val reasonCode: String? = null,
+    val metadata: Map<String, Any?> = emptyMap(),
+    val actions: List<ActionSpec> = emptyList()
 )
-sealed interface DecisionNode {
-    val id: String
 
-    data class RegexNode(
-        override val id: String,
-        val targetField: String,
-        val pattern: String,
-        val captureVariables: Map<String, String> = emptyMap(),
-        val onMatch: DecisionNode,
-        val onNoMatch: DecisionNode
-    ) : DecisionNode
-
-    data class ExpressionNode(
-        override val id: String,
-        val expression: String,
-        val onTrue: DecisionNode,
-        val onFalse: DecisionNode
-    ) : DecisionNode
-
-    data class JevJudgmentNode(
-        override val id: String,
-        val promptTemplate: String,
-        val judgmentType: String, // "Noul", "Choice", or "Score"
-        val tauHigh: Double = 0.85,
-        val tauLow: Double = 0.15,
-        val onMatch: DecisionNode,
-        val onNoMatch: DecisionNode,
-        val onUncertain: DecisionNode
-    ) : DecisionNode
-
-    data class OutcomeLeaf(
-        override val id: String,
-        val outcome: String,
-        val reasonCode: String,
-        val metadata: Map<String, Any?> = emptyMap(),
-        val actions: List<ActionSpec> = emptyList()
-    ) : DecisionNode
+// The whole evaluator contract: (config, context) -> branch label.
+interface NodeEvaluator {
+    val type: String
+    fun evaluate(config: Map<String, Any?>, context: DecisionContext): String
 }
+
+// Registry mapping node type -> evaluator. Built-ins are default-registered;
+// third parties register custom evaluators here (e.g. via ServiceLoader).
+class EvaluatorRegistry {
+    private val evaluators = java.util.concurrent.ConcurrentHashMap<String, NodeEvaluator>()
+
+    fun register(evaluator: NodeEvaluator) {
+        evaluators[evaluator.type] = evaluator
+    }
+
+    fun resolve(type: String): NodeEvaluator =
+        evaluators[type] ?: throw UnknownNodeType("No evaluator registered for type '$type'")
+}
+
+class UnknownNodeType(message: String) : RuntimeException(message)
 
 // Evaluation response output wrapper.
 data class EvaluationVerdict(
@@ -689,150 +686,142 @@ class ResilientJevClient(
 package com.aegistree.core.engine
 
 import com.aegistree.core.ast.*
-import com.aegistree.jev.client.JevClient
-import com.aegistree.jev.client.JevSystemOneRequest
 import kotlinx.coroutines.coroutineScope
-import java.util.regex.Pattern
-import java.util.concurrent.ConcurrentHashMap
 
 class TreeExecutionEngine(
-    private val jevClient: JevClient
+    private val registry: EvaluatorRegistry
 ) {
-    private val compiledRegexCache = ConcurrentHashMap<String, Pattern>()
-
-    suspend fun execute(rootNode: DecisionNode, context: DecisionContext): EvaluationVerdict =
+    suspend fun execute(rootNode: Node, context: DecisionContext): EvaluationVerdict =
         coroutineScope {
             val trace = ExecutionTrace(traceId = java.util.UUID.randomUUID().toString())
             val startTimeNanos = System.nanoTime()
 
-            val leafResult = evaluateNode(rootNode, context, trace)
+            val leaf = evaluateNode(rootNode, context, trace)
             trace.totalLatencyMicros = (System.nanoTime() - startTimeNanos) / 1000
 
             EvaluationVerdict(
-                outcome = leafResult.outcome,
-                reasonCode = leafResult.reasonCode,
-                metadata = leafResult.metadata,
-                actions = leafResult.actions,
+                outcome = leaf.outcome ?: "UNKNOWN",
+                reasonCode = leaf.reasonCode ?: "",
+                metadata = leaf.metadata,
+                actions = leaf.actions,
                 trace = if (context.traceEnabled) trace else null
             )
         }
 
-    private suspend fun evaluateNode(
-        node: DecisionNode,
-        context: DecisionContext,
-        trace: ExecutionTrace
-    ): DecisionNode.OutcomeLeaf {
-        val nodeStartTime = System.nanoTime()
+    private suspend fun evaluateNode(node: Node, context: DecisionContext, trace: ExecutionTrace): Node {
+        val start = System.nanoTime()
 
-        return when (node) {
-            is DecisionNode.OutcomeLeaf -> {
-                trace.steps.add(
-                    NodeTraceStep(
-                        nodeId = node.id,
-                        nodeType = "OutcomeLeaf",
-                        executionTimeNanos = System.nanoTime() - nodeStartTime,
-                        evaluationResult = node.outcome
-                    )
-                )
-                node
-            }
-
-            is DecisionNode.RegexNode -> {
-                val fieldValue = context.getTyped<String>(node.targetField) ?: ""
-                val compiledPattern = compiledRegexCache.computeIfAbsent(node.pattern) { Pattern.compile(it) }
-                val matcher = compiledPattern.matcher(fieldValue)
-                val isMatch = matcher.find()
-
-                if (isMatch && node.captureVariables.isNotEmpty()) {
-                    node.captureVariables.forEach { (varName, captureGroup) ->
-                        val groupIdx = captureGroup.removePrefix("$").toIntOrNull() ?: 0
-                        if (groupIdx <= matcher.groupCount()) {
-                            context.contextVariables[varName] = matcher.group(groupIdx)
-                        }
-                    }
-                }
-
-                trace.steps.add(
-                    NodeTraceStep(
-                        nodeId = node.id,
-                        nodeType = "RegexNode",
-                        executionTimeNanos = System.nanoTime() - nodeStartTime,
-                        evaluationResult = if (isMatch) "MATCH" else "NO_MATCH"
-                    )
-                )
-
-                evaluateNode(if (isMatch) node.onMatch else node.onNoMatch, context, trace)
-            }
-
-            is DecisionNode.ExpressionNode -> {
-                val exprResult = evaluateSimplePredicate(node.expression, context)
-                trace.steps.add(
-                    NodeTraceStep(
-                        nodeId = node.id,
-                        nodeType = "ExpressionNode",
-                        executionTimeNanos = System.nanoTime() - nodeStartTime,
-                        evaluationResult = exprResult.toString()
-                    )
-                )
-                evaluateNode(if (exprResult) node.onTrue else node.onFalse, context, trace)
-            }
-
-            is DecisionNode.JevJudgmentNode -> {
-                val interpolatedPrompt = interpolatePrompt(node.promptTemplate, context)
-                val jevReq = JevSystemOneRequest(
-                    prompt = interpolatedPrompt,
-                    judgmentType = node.judgmentType,
-                    contextPayload = context.payload
-                )
-
-                val jevResponseResult = jevClient.evaluateSystemOne(jevReq)
-                val (nextNode, evalCode) = jevResponseResult.fold(
-                    onSuccess = { resp ->
-                        val prob = resp.probability
-                        when {
-                            prob >= node.tauHigh && (resp.noulVerdict == true || resp.selectedChoice != null) ->
-                                Pair(node.onMatch, "JEV_MATCH (prob=$prob)")
-                            (1.0 - prob) >= (1.0 - node.tauLow) && resp.noulVerdict == false ->
-                                Pair(node.onNoMatch, "JEV_NO_MATCH (prob=$prob)")
-                            else ->
-                                Pair(node.onUncertain, "JEV_UNCERTAIN_PROBABILITY (prob=$prob)")
-                        }
-                    },
-                    onFailure = { err ->
-                        Pair(node.onUncertain, "JEV_FALLBACK_FAILURE: ${err.message}")
-                    }
-                )
-
-                trace.steps.add(
-                    NodeTraceStep(
-                        nodeId = node.id,
-                        nodeType = "JevJudgmentNode",
-                        executionTimeNanos = System.nanoTime() - nodeStartTime,
-                        evaluationResult = evalCode
-                    )
-                )
-
-                evaluateNode(nextNode, context, trace)
-            }
+        // Terminal node (OutcomeLeaf): stop and return it.
+        if (node.outcome != null) {
+            trace.steps.add(NodeTraceStep(node.id, node.type, System.nanoTime() - start, node.outcome))
+            return node
         }
-    }
 
-    private fun evaluateSimplePredicate(expression: String, context: DecisionContext): Boolean {
-        if (expression.contains("amount > 10000")) {
-            val amount = context.getTyped<Number>("payload.amount")?.toDouble() ?: 0.0
-            return amount > 10000.0
-        }
-        return false
-    }
+        // Delegate to the registered evaluator; it returns a branch label.
+        val evaluator = registry.resolve(node.type)
+        val branchLabel = evaluator.evaluate(node.config, context)
 
-    private fun interpolatePrompt(template: String, context: DecisionContext): String {
-        var result = template
-        context.payload.forEach { (k, v) -> result = result.replace("\${payload.$k}", v.toString()) }
-        context.contextVariables.forEach { (k, v) -> result = result.replace("\${context.$k}", v.toString()) }
-        return result
+        trace.steps.add(NodeTraceStep(node.id, node.type, System.nanoTime() - start, branchLabel))
+
+        val next = node.branches[branchLabel]
+            ?: throw MissingBranch("Node '${node.id}' (${node.type}) returned unknown branch '$branchLabel'")
+
+        return evaluateNode(next, context, trace)
     }
 }
+
+class MissingBranch(message: String) : RuntimeException(message)
 ```
+
+### 9.4 Evaluators (built-in & custom)
+
+Built-ins are ordinary `NodeEvaluator` implementations registered by default. Third parties add new node types without touching the core.
+
+```kotlin
+package com.aegistree.evaluators
+
+import com.aegistree.core.ast.NodeEvaluator
+import com.aegistree.core.ast.DecisionContext
+import java.util.concurrent.ConcurrentHashMap
+import java.util.regex.Pattern
+
+// Built-in: regex evaluator. Branch labels: "match" | "noMatch".
+class RegexEvaluator : NodeEvaluator {
+    override val type = "Regex"
+
+    private val cache = ConcurrentHashMap<String, Pattern>()
+
+    override fun evaluate(config: Map<String, Any?>, context: DecisionContext): String {
+        val targetField = config["targetField"] as String
+        val patternStr = config["pattern"] as String
+        val fieldValue = context.getTyped<String>(targetField) ?: ""
+
+        val pattern = cache.computeIfAbsent(patternStr) { Pattern.compile(it) }
+        val matched = pattern.matcher(fieldValue).find()
+
+        // Capture groups into the context for downstream nodes.
+        val captures = config["captureVariables"] as? Map<String, String> ?: emptyMap()
+        if (matched && captures.isNotEmpty()) {
+            val matcher = pattern.matcher(fieldValue)
+            captures.forEach { (name, groupRef) ->
+                val idx = groupRef.removePrefix("$").toIntOrNull() ?: 0
+                if (idx <= matcher.groupCount()) context.contextVariables[name] = matcher.group(idx)
+            }
+        }
+
+        return if (matched) "match" else "noMatch"
+    }
+}
+
+// A third-party evaluator — no core changes required.
+class GeoFenceEvaluator(private val geo: GeoService) : NodeEvaluator {
+    override val type = "GeoFence"
+
+    override fun evaluate(config: Map<String, Any?>, context: DecisionContext): String {
+        val inside = geo.isInside(
+            config["polygonId"] as String,
+            context.payload["lat"] as Double,
+            context.payload["lon"] as Double
+        )
+        return if (inside) "inside" else "outside"
+    }
+}
+
+// Default registry wired up at startup (and augmented via ServiceLoader).
+val defaultRegistry = EvaluatorRegistry().apply {
+    register(RegexEvaluator())
+    register(CelEvaluator())
+    register(VelocityEvaluator())
+    register(JevEvaluator())
+}
+```
+
+### 9.5 SDK SPI & Interoperability
+
+AegisTree is shipped as an SDK that other services depend on. Everything domain-specific is injected, so the core has **zero** domain knowledge.
+
+```
+aegistree/
+├── aegistree-spi/        # ONLY interfaces: NodeEvaluator, ActionDispatcher, JevClient, StrategyStore, CacheProvider
+├── aegistree-core/       # engine + registry + generic Node model (depends on spi)
+├── aegistree-evaluators/ # built-in Regex/CEL/Velocity/Jev plugins
+├── aegistree-jev-client/ # Jev HTTP/gRPC client
+├── aegistree-server/     # Spring Boot REST + gRPC gateway
+└── aegistree-spi-kafka/  # Kafka ActionDispatcher implementation
+```
+
+| Concern | Extension point |
+|---|---|
+| **Outcomes** | `String` + per-strategy `outcomes[]` declaration — never an enum |
+| **Node logic** | `NodeEvaluator` SPI + `EvaluatorRegistry`; `type` is the extension key |
+| **Side effects** | `ActionDispatcher` SPI (Kafka / webhook / custom) |
+| **Model backend** | `JevClient` interface — swap TypeSafe AI for any model |
+| **Cache** | `CacheProvider` SPI — Caffeine / Redis / custom |
+| **Storage** | `StrategyStore` SPI — PostgreSQL now, anything later |
+| **Contract versioning** | `schemaVersion` (engine contract) vs `version` (per-strategy semver) |
+| **Auto-discovery** | `java.util.ServiceLoader` — drop in a JAR, it self-registers |
+
+
 
 ## 10. Strategy Lifecycle, Static Validation, Shadow Testing & Observability
 
@@ -865,7 +854,7 @@ Submission Strategy Registry
 - **Cycle & Loop Detection** — DFS to enforce an acyclic (DAG) layout.
 - **ReDoS Protection** — validates regex with RE2 static checks for O(N) worst-case time.
 - **Unreachable Branch Identification** — detects dead paths and unreachable subtrees.
-- **Fallback Handler Enforcer** — every `JevJudgmentNode` must define an `onUncertain` target.
+- **Fallback Handler Enforcer** — every `Jev` node must define an `uncertain` branch.
 
 ### 10.2 Shadow / Canary Evaluation Mode
 
@@ -915,9 +904,9 @@ AegisTree exports real-time stats via OpenTelemetry and Micrometer.
     "actionCount": 1
   },
   "executionGraphTrace": [
-    { "nodeId": "node_01_sanction_check", "type": "RegexNode", "latencyNanos": 18200, "result": "NO_MATCH" },
-    { "nodeId": "node_02_velocity_and_amount", "type": "ExpressionNode", "latencyNanos": 8400, "result": "true" },
-    { "nodeId": "node_03_jev_system_one_check", "type": "JevJudgmentNode", "latencyNanos": 41100000, "result": "JEV_MATCH (prob=0.92)" }
+    { "nodeId": "node_01_sanction_check", "type": "Regex", "latencyNanos": 18200, "result": "noMatch" },
+    { "nodeId": "node_02_velocity_and_amount", "type": "Cel", "latencyNanos": 8400, "result": "true" },
+    { "nodeId": "node_03_jev_system_one_check", "type": "Jev", "latencyNanos": 41100000, "result": "match (prob=0.92)" }
   ]
 }
 ```
