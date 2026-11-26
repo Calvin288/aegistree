@@ -64,13 +64,13 @@ aegistree/
 
 AegisTree abstracts domain execution patterns into standardized tree evaluations:
 
-| Domain | Fast Deterministic Stage | Jev Neural Stage | DecisionOutcome | Async ActionSpec Side-Effects |
-|---|---|---|---|---|
-| Financial Risk & AML | IBAN regex + Redis 1-min velocity | Noul/Score behavioral anomaly | `BLOCK`, `STEP_UP_2FA` | EmitKafkaAlert, FreezeCard, TriggerAuditLog |
-| Customer Likelihood & NBA | User tier check + inventory guardrail | Choice/Score affinity | `RECOMMEND_OFFER_A` | InjectBannerContext, TrackConversionEvent |
-| LLM Agent Guardrails | PII masking regex + blocklist | Noul prompt-injection | `REDACT_AND_FORWARD` | SanitizePayload, MetricIncrement |
-| Trust, Safety & Content | Keyword/link blocklist + karma | Choice toxicity rubric | `SHADOW_BAN`, `HUMAN_REVIEW` | HidePost, PublishToModeratorQueue |
-| Support Triage & Routing | Order ID regex + SLA expression | Choice urgency/intent | `ROUTE_VIP_QUEUE` | AssignZendeskTicket, NotifySlackChannel |
+| Domain                    | Fast Deterministic Stage              | Jev Neural Stage              | DecisionOutcome              | Async ActionSpec Side-Effects               |
+| ------------------------- | ------------------------------------- | ----------------------------- | ---------------------------- | ------------------------------------------- |
+| Financial Risk & AML      | IBAN regex + Redis 1-min velocity     | Noul/Score behavioral anomaly | `BLOCK`, `STEP_UP_2FA`       | EmitKafkaAlert, FreezeCard, TriggerAuditLog |
+| Customer Likelihood & NBA | User tier check + inventory guardrail | Choice/Score affinity         | `RECOMMEND_OFFER_A`          | InjectBannerContext, TrackConversionEvent   |
+| LLM Agent Guardrails      | PII masking regex + blocklist         | Noul prompt-injection         | `REDACT_AND_FORWARD`         | SanitizePayload, MetricIncrement            |
+| Trust, Safety & Content   | Keyword/link blocklist + karma        | Choice toxicity rubric        | `SHADOW_BAN`, `HUMAN_REVIEW` | HidePost, PublishToModeratorQueue           |
+| Support Triage & Routing  | Order ID regex + SLA expression       | Choice urgency/intent         | `ROUTE_VIP_QUEUE`            | AssignZendeskTicket, NotifySlackChannel     |
 
 ### Multi-Domain Tree Topologies
 
@@ -190,27 +190,27 @@ Nodes are **generic**: a node has a `type` string, a `config` map, and a `branch
 
 **Built-in evaluators** (each returns a branch label):
 
-| Evaluator `type` | Behavior | Branch labels |
-|---|---|---|
-| `Regex` | Linear-time-safe (RE2-compliant) regex match; captured groups populate `DecisionContext` | `match` / `noMatch` |
-| `Cel` | Sandboxed Google CEL boolean expression over payload/context | `true` / `false` |
-| `Velocity` | Distributed sliding-window counter (Redis) or local cache (Caffeine) | `exceed` / `below` |
-| `Jev` | Sends a structured prompt to `/v1/systemone`; branches on returned probability | `match` / `noMatch` / `uncertain` |
-| `Composite` | Boolean combination (`ALL`/`ANY`/`NOT`) with cost-aware short-circuiting | `true` / `false` |
-| `Switch` | Multi-way routing on equality, ranges, or string enums | any configured labels |
+| Evaluator `type` | Behavior                                                                                 | Branch labels                     |
+| ---------------- | ---------------------------------------------------------------------------------------- | --------------------------------- |
+| `Regex`          | Linear-time-safe (RE2-compliant) regex match; captured groups populate `DecisionContext` | `match` / `noMatch`               |
+| `Cel`            | Sandboxed Google CEL boolean expression over payload/context                             | `true` / `false`                  |
+| `Velocity`       | Distributed sliding-window counter (Redis) or local cache (Caffeine)                     | `exceed` / `below`                |
+| `Jev`            | Sends a structured prompt to `/v1/systemone`; branches on returned probability           | `match` / `noMatch` / `uncertain` |
+| `Composite`      | Boolean combination (`ALL`/`ANY`/`NOT`) with cost-aware short-circuiting                 | `true` / `false`                  |
+| `Switch`         | Multi-way routing on equality, ranges, or string enums                                   | any configured labels             |
 
 **Terminal node** (`type: "OutcomeLeaf"`): a node with an `outcome` field — no evaluator, no branches. It produces the `DecisionOutcome` (reason code, metadata, `ActionSpec` list).
 
 ## 5. Non-Functional Requirements, Performance & Scale SLAs
 
-| Requirement | Deterministic Path (Regex/CEL) | Hybrid Path (Jev) | Hot-Reload & Admin Ops |
-|---|---|---|---|
-| Throughput (per 8-vCPU node) | ≥ 50,000 req/s | ≥ 5,000 req/s (gRPC pool) | 1,000 reloads/s without loss |
-| Latency p50 | ≤ 0.4 ms | ≤ 45 ms (network dependent) | Immediate atomic pointer swap |
-| Latency p99 | ≤ 1.8 ms | ≤ 180 ms | ≤ 50 ms max reload latch |
-| Latency p99.9 | ≤ 4.5 ms | ≤ 400 ms | ≤ 150 ms |
-| Memory allocation | Zero heap churn on evaluation | Max 2 KB per coroutine frame | Non-blocking garbage sweep |
-| Availability SLA | 99.999% | 99.99% (fallback via ON_UNCERTAIN) | 100% zero-downtime hot swap |
+| Requirement                  | Deterministic Path (Regex/CEL) | Hybrid Path (Jev)                  | Hot-Reload & Admin Ops        |
+| ---------------------------- | ------------------------------ | ---------------------------------- | ----------------------------- |
+| Throughput (per 8-vCPU node) | ≥ 50,000 req/s                 | ≥ 5,000 req/s (gRPC pool)          | 1,000 reloads/s without loss  |
+| Latency p50                  | ≤ 0.4 ms                       | ≤ 45 ms (network dependent)        | Immediate atomic pointer swap |
+| Latency p99                  | ≤ 1.8 ms                       | ≤ 180 ms                           | ≤ 50 ms max reload latch      |
+| Latency p99.9                | ≤ 4.5 ms                       | ≤ 400 ms                           | ≤ 150 ms                      |
+| Memory allocation            | Zero heap churn on evaluation  | Max 2 KB per coroutine frame       | Non-blocking garbage sweep    |
+| Availability SLA             | 99.999%                        | 99.99% (fallback via ON_UNCERTAIN) | 100% zero-downtime hot swap   |
 
 ### Static Optimization & Cache Strategies
 
@@ -248,10 +248,19 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
         "type": "OutcomeLeaf",
         "outcome": "BLOCK",
         "reasonCode": "ERR_SANCTIONED_COUNTRY_PATTERN",
-        "metadata": { "riskLevel": "CRITICAL", "actionSource": "DETERMINISTIC_REGEX" },
+        "metadata": {
+          "riskLevel": "CRITICAL",
+          "actionSource": "DETERMINISTIC_REGEX"
+        },
         "actions": [
-          { "actionType": "KAFKA_DISPATCH", "params": { "topic": "risk.compliance.alerts", "priority": "HIGH" } },
-          { "actionType": "FREEZE_ACCOUNT", "params": { "lockType": "TOTAL_LOCK" } }
+          {
+            "actionType": "KAFKA_DISPATCH",
+            "params": { "topic": "risk.compliance.alerts", "priority": "HIGH" }
+          },
+          {
+            "actionType": "FREEZE_ACCOUNT",
+            "params": { "lockType": "TOTAL_LOCK" }
+          }
         ]
       },
       "noMatch": {
@@ -286,9 +295,15 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
                 "type": "OutcomeLeaf",
                 "outcome": "CHALLENGE",
                 "reasonCode": "RISK_JEV_HIGH_PROBABILITY_FRAUD",
-                "metadata": { "riskLevel": "HIGH", "actionSource": "NEURAL_SYSTEM_ONE" },
+                "metadata": {
+                  "riskLevel": "HIGH",
+                  "actionSource": "NEURAL_SYSTEM_ONE"
+                },
                 "actions": [
-                  { "actionType": "STEP_UP_AUTHENTICATION", "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" } }
+                  {
+                    "actionType": "STEP_UP_AUTHENTICATION",
+                    "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" }
+                  }
                 ]
               },
               "noMatch": {
@@ -298,7 +313,10 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
                 "reasonCode": "OK_VERIFIED_HIGH_VALUE",
                 "metadata": { "vipEligible": true },
                 "actions": [
-                  { "actionType": "APPLY_PROMO_CREDIT", "params": { "creditAmount": 50.0 } }
+                  {
+                    "actionType": "APPLY_PROMO_CREDIT",
+                    "params": { "creditAmount": 50.0 }
+                  }
                 ]
               },
               "uncertain": {
@@ -308,7 +326,10 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
                 "reasonCode": "WARN_JEV_UNCERTAIN_AMBIGUITY",
                 "metadata": { "requiresManualAudit": true },
                 "actions": [
-                  { "actionType": "CREATE_WORKFLOW_TICKET", "params": { "queue": "MANUAL_FRAUD_REVIEW" } }
+                  {
+                    "actionType": "CREATE_WORKFLOW_TICKET",
+                    "params": { "queue": "MANUAL_FRAUD_REVIEW" }
+                  }
                 ]
               }
             }
@@ -324,39 +345,39 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
 
 Strategies and their versions are persisted in PostgreSQL. The DAG itself is stored as `jsonb`; versions are immutable and use semantic versioning.
 
-| Table | Purpose |
-|---|---|
-| `strategies` | One row per strategy (stable identity + metadata). |
+| Table               | Purpose                                                     |
+| ------------------- | ----------------------------------------------------------- |
+| `strategies`        | One row per strategy (stable identity + metadata).          |
 | `strategy_versions` | Immutable point-in-time snapshots of a strategy's JSON DAG. |
 
 ### `strategies`
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `uuid` | Primary key |
-| `slug` | `text` | Unique, human-readable handle for invocation |
-| `name` | `text` | Display name |
-| `description` | `text` | Optional |
-| `owner` | `text` | Owning team/person |
-| `status` | `text` | `DRAFT` \| `PUBLISHED` \| `ARCHIVED` |
-| `active_version` | `text` | Semantic version currently published (e.g. `0.0.1`) |
-| `created_at` | `timestamptz` | — |
-| `updated_at` | `timestamptz` | — |
+| Column           | Type          | Notes                                               |
+| ---------------- | ------------- | --------------------------------------------------- |
+| `id`             | `uuid`        | Primary key                                         |
+| `slug`           | `text`        | Unique, human-readable handle for invocation        |
+| `name`           | `text`        | Display name                                        |
+| `description`    | `text`        | Optional                                            |
+| `owner`          | `text`        | Owning team/person                                  |
+| `status`         | `text`        | `DRAFT` \| `PUBLISHED` \| `ARCHIVED`                |
+| `active_version` | `text`        | Semantic version currently published (e.g. `0.0.1`) |
+| `created_at`     | `timestamptz` | —                                                   |
+| `updated_at`     | `timestamptz` | —                                                   |
 
 ### `strategy_versions`
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `uuid` | Primary key |
-| `strategy_id` | `uuid` | FK → `strategies.id` |
-| `version` | `text` | Semantic version (`0.0.0`, `0.0.1`, …) |
-| `schema_json` | `jsonb` | Full DAG definition |
-| `checksum` | `text` | SHA-256 of `schema_json` for cache keying |
-| `status` | `text` | `DRAFT` \| `VALIDATED` \| `PUBLISHED` \| `SUPERSEDED` \| `REJECTED` |
-| `validation_report` | `jsonb` | Static validation errors/warnings |
-| `published_at` | `timestamptz` | Set when published |
-| `created_at` | `timestamptz` | — |
-| `created_by` | `text` | — |
+| Column              | Type          | Notes                                                               |
+| ------------------- | ------------- | ------------------------------------------------------------------- |
+| `id`                | `uuid`        | Primary key                                                         |
+| `strategy_id`       | `uuid`        | FK → `strategies.id`                                                |
+| `version`           | `text`        | Semantic version (`0.0.0`, `0.0.1`, …)                              |
+| `schema_json`       | `jsonb`       | Full DAG definition                                                 |
+| `checksum`          | `text`        | SHA-256 of `schema_json` for cache keying                           |
+| `status`            | `text`        | `DRAFT` \| `VALIDATED` \| `PUBLISHED` \| `SUPERSEDED` \| `REJECTED` |
+| `validation_report` | `jsonb`       | Static validation errors/warnings                                   |
+| `published_at`      | `timestamptz` | Set when published                                                  |
+| `created_at`        | `timestamptz` | —                                                                   |
+| `created_by`        | `text`        | —                                                                   |
 
 **Constraints:** `UNIQUE (strategy_id, version)` — versions are immutable and monotonic.
 
@@ -372,18 +393,18 @@ DRAFT ──validate──► VALIDATED ──publish──► PUBLISHED ──n
 
 Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation endpoint uses an API key.
 
-| Method | Path | Purpose | Auth |
-|---|---|---|---|
-| `POST` | `/api/v1/strategies` | Create a new strategy (draft `0.0.0`) | OAuth |
-| `GET` | `/api/v1/strategies` | List strategies | OAuth |
-| `GET` | `/api/v1/strategies/{id}` | Get strategy (latest or `?version=`) | OAuth |
-| `PUT` | `/api/v1/strategies/{id}` | Edit strategy → new draft version | OAuth |
-| `POST` | `/api/v1/strategies/{id}/validate` | Run static validation | OAuth |
-| `POST` | `/api/v1/strategies/{id}/publish` | Publish a version (default latest draft) | OAuth |
-| `GET` | `/api/v1/strategies/{id}/versions` | List versions | OAuth |
-| `GET` | `/api/v1/strategies/{id}/versions/{version}` | Get a specific version | OAuth |
-| `POST` | `/api/v1/strategies/{id}/archive` | Archive a strategy | OAuth |
-| `POST` | `/api/v1/evaluate` | Evaluate a payload against a strategy | API key |
+| Method | Path                                         | Purpose                                  | Auth    |
+| ------ | -------------------------------------------- | ---------------------------------------- | ------- |
+| `POST` | `/api/v1/strategies`                         | Create a new strategy (draft `0.0.0`)    | OAuth   |
+| `GET`  | `/api/v1/strategies`                         | List strategies                          | OAuth   |
+| `GET`  | `/api/v1/strategies/{id}`                    | Get strategy (latest or `?version=`)     | OAuth   |
+| `PUT`  | `/api/v1/strategies/{id}`                    | Edit strategy → new draft version        | OAuth   |
+| `POST` | `/api/v1/strategies/{id}/validate`           | Run static validation                    | OAuth   |
+| `POST` | `/api/v1/strategies/{id}/publish`            | Publish a version (default latest draft) | OAuth   |
+| `GET`  | `/api/v1/strategies/{id}/versions`           | List versions                            | OAuth   |
+| `GET`  | `/api/v1/strategies/{id}/versions/{version}` | Get a specific version                   | OAuth   |
+| `POST` | `/api/v1/strategies/{id}/archive`            | Archive a strategy                       | OAuth   |
+| `POST` | `/api/v1/evaluate`                           | Evaluate a payload against a strategy    | API key |
 
 ### Create strategy
 
@@ -441,8 +462,17 @@ Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation end
 {
   "valid": false,
   "errors": [
-    { "code": "CYCLE_DETECTED", "message": "DAG contains a cycle", "nodeId": "node_x", "path": "rootNode.branches.match" },
-    { "code": "MISSING_UNCERTAIN", "message": "Jev node lacks 'uncertain' branch", "nodeId": "node_jev" }
+    {
+      "code": "CYCLE_DETECTED",
+      "message": "DAG contains a cycle",
+      "nodeId": "node_x",
+      "path": "rootNode.branches.match"
+    },
+    {
+      "code": "MISSING_UNCERTAIN",
+      "message": "Jev node lacks 'uncertain' branch",
+      "nodeId": "node_jev"
+    }
   ]
 }
 ```
@@ -472,8 +502,18 @@ Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation end
 ```json
 {
   "items": [
-    { "version": "0.0.1", "status": "PUBLISHED", "checksum": "sha256:…", "publishedAt": "…" },
-    { "version": "0.0.0", "status": "SUPERSEDED", "checksum": "sha256:…", "publishedAt": "…" }
+    {
+      "version": "0.0.1",
+      "status": "PUBLISHED",
+      "checksum": "sha256:…",
+      "publishedAt": "…"
+    },
+    {
+      "version": "0.0.0",
+      "status": "SUPERSEDED",
+      "checksum": "sha256:…",
+      "publishedAt": "…"
+    }
   ]
 }
 ```
@@ -487,7 +527,7 @@ Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation end
 ```json
 {
   "strategyRef": { "slug": "risk-aml-screening", "version": "0.0.1" },
-  "payload": { "accountNumber": "IR1234567890123456789012", "amount": 15000.00 },
+  "payload": { "accountNumber": "IR1234567890123456789012", "amount": 15000.0 },
   "context": { "summary": "New account, high-value transfer" },
   "options": { "trace": true, "shadow": false }
 }
@@ -505,7 +545,10 @@ Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation end
     "reasonCode": "RISK_JEV_HIGH",
     "metadata": { "riskLevel": "HIGH" },
     "actions": [
-      { "actionType": "STEP_UP_AUTHENTICATION", "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" } }
+      {
+        "actionType": "STEP_UP_AUTHENTICATION",
+        "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" }
+      }
     ]
   },
   "trace": []
@@ -810,18 +853,16 @@ aegistree/
 └── aegistree-spi-kafka/  # Kafka ActionDispatcher implementation
 ```
 
-| Concern | Extension point |
-|---|---|
-| **Outcomes** | `String` + per-strategy `outcomes[]` declaration — never an enum |
-| **Node logic** | `NodeEvaluator` SPI + `EvaluatorRegistry`; `type` is the extension key |
-| **Side effects** | `ActionDispatcher` SPI (Kafka / webhook / custom) |
-| **Model backend** | `JevClient` interface — swap TypeSafe AI for any model |
-| **Cache** | `CacheProvider` SPI — Caffeine / Redis / custom |
-| **Storage** | `StrategyStore` SPI — PostgreSQL now, anything later |
-| **Contract versioning** | `schemaVersion` (engine contract) vs `version` (per-strategy semver) |
-| **Auto-discovery** | `java.util.ServiceLoader` — drop in a JAR, it self-registers |
-
-
+| Concern                 | Extension point                                                        |
+| ----------------------- | ---------------------------------------------------------------------- |
+| **Outcomes**            | `String` + per-strategy `outcomes[]` declaration — never an enum       |
+| **Node logic**          | `NodeEvaluator` SPI + `EvaluatorRegistry`; `type` is the extension key |
+| **Side effects**        | `ActionDispatcher` SPI (Kafka / webhook / custom)                      |
+| **Model backend**       | `JevClient` interface — swap TypeSafe AI for any model                 |
+| **Cache**               | `CacheProvider` SPI — Caffeine / Redis / custom                        |
+| **Storage**             | `StrategyStore` SPI — PostgreSQL now, anything later                   |
+| **Contract versioning** | `schemaVersion` (engine contract) vs `version` (per-strategy semver)   |
+| **Auto-discovery**      | `java.util.ServiceLoader` — drop in a JAR, it self-registers           |
 
 ## 10. Strategy Lifecycle, Static Validation, Shadow Testing & Observability
 
@@ -904,29 +945,44 @@ AegisTree exports real-time stats via OpenTelemetry and Micrometer.
     "actionCount": 1
   },
   "executionGraphTrace": [
-    { "nodeId": "node_01_sanction_check", "type": "Regex", "latencyNanos": 18200, "result": "noMatch" },
-    { "nodeId": "node_02_velocity_and_amount", "type": "Cel", "latencyNanos": 8400, "result": "true" },
-    { "nodeId": "node_03_jev_system_one_check", "type": "Jev", "latencyNanos": 41100000, "result": "match (prob=0.92)" }
+    {
+      "nodeId": "node_01_sanction_check",
+      "type": "Regex",
+      "latencyNanos": 18200,
+      "result": "noMatch"
+    },
+    {
+      "nodeId": "node_02_velocity_and_amount",
+      "type": "Cel",
+      "latencyNanos": 8400,
+      "result": "true"
+    },
+    {
+      "nodeId": "node_03_jev_system_one_check",
+      "type": "Jev",
+      "latencyNanos": 41100000,
+      "result": "match (prob=0.92)"
+    }
   ]
 }
 ```
 
 **How to view the telemetry:**
 
-| Signal | Backend | How you look at it |
-|---|---|---|
-| **Traces** | OpenTelemetry Collector → **Jaeger** or **Grafana Tempo** | Open the backend UI and paste a `traceId` (returned in every evaluate response and audit log) to see the full DAG path with per-node latencies. |
-| **Metrics** | **Prometheus** (scrapes) + **Grafana** (dashboards) | Query `aegistree_engine_eval_duration_seconds`, `aegistree_jev_confidence_distribution`, and `aegistree_shadow_divergence_total`. |
-| **Logs** | **Loki** (or any log aggregator) | Structured JSON audit logs ship to stdout, are collected, and correlated with traces via `traceId`. |
+| Signal      | Backend                                                   | How you look at it                                                                                                                              |
+| ----------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Traces**  | OpenTelemetry Collector → **Jaeger** or **Grafana Tempo** | Open the backend UI and paste a `traceId` (returned in every evaluate response and audit log) to see the full DAG path with per-node latencies. |
+| **Metrics** | **Prometheus** (scrapes) + **Grafana** (dashboards)       | Query `aegistree_engine_eval_duration_seconds`, `aegistree_jev_confidence_distribution`, and `aegistree_shadow_divergence_total`.               |
+| **Logs**    | **Loki** (or any log aggregator)                          | Structured JSON audit logs ship to stdout, are collected, and correlated with traces via `traceId`.                                             |
 
 ### 10.4 Open-Source Development Roadmap
 
-| Phase | Deliverables |
-|---|---|
-| **v0.1 Core Engine** | JVM core AST model, deterministic engine, JSON schema parser |
-| **v0.2 Resilience & Jev** | Jev System One SDK, circuit breakers, dynamic caching |
-| **v0.3 Gateway Server** | Netty gRPC gateway, REST JSON endpoint, hot-swap registry |
-| **v1.0 Production Ready** | Kafka Action SPI, shadow execution, web console UI |
+| Phase                     | Deliverables                                                 |
+| ------------------------- | ------------------------------------------------------------ |
+| **v0.1 Core Engine**      | JVM core AST model, deterministic engine, JSON schema parser |
+| **v0.2 Resilience & Jev** | Jev System One SDK, circuit breakers, dynamic caching        |
+| **v0.3 Gateway Server**   | Netty gRPC gateway, REST JSON endpoint, hot-swap registry    |
+| **v1.0 Production Ready** | Kafka Action SPI, shadow execution, web console UI           |
 
 - **v0.1 (Core AST Framework)** — Pure JVM evaluation engine (`aegistree-core`), CEL evaluation, RE2 regex integration, JSON strategy loading.
 - **v0.2 (Jev Integration & Resilience)** — `aegistree-jev-client` with L1/L2 caching, Resilience4j fallbacks, static AST optimizers, test frameworks.
