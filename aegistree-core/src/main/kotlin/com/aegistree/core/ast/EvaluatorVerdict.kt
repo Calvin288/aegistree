@@ -1,5 +1,7 @@
 package com.aegistree.core.ast
 
+import com.aegistree.spi.ActionSpec
+
 data class EvaluationVerdict(
         val outcome: String,
         val reasonCode: String,

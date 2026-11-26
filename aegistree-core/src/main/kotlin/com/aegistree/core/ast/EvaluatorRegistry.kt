@@ -1,5 +1,6 @@
 package com.aegistree.core.ast
 
+import com.aegistree.spi.NodeEvaluator
 import java.util.concurrent.ConcurrentHashMap
 
 class EvaluatorRegistry {
