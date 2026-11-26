@@ -1,6 +1,7 @@
 package com.aegistree.core.engine
 
 import com.aegistree.core.ast.*
+import com.aegistree.spi.*
 
 /**
  * Walks a strategy DAG from its root to a terminal [Node] (an OutcomeLeaf), resolving each node's
@@ -32,9 +33,10 @@ class TreeExecutionEngine(private val registry: EvaluatorRegistry) {
         val start = System.nanoTime()
 
         // Terminal node (OutcomeLeaf): stop and return it.
-        if (node.leaf != null) {
+        val leaf = node.leaf
+        if (leaf != null) {
             trace.steps.add(
-                    NodeTraceStep(node.id, node.type, System.nanoTime() - start, node.leaf.outcome)
+                    NodeTraceStep(node.id, node.type, System.nanoTime() - start, leaf.outcome)
             )
             return node
         }

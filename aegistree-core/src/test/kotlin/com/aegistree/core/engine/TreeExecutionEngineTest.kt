@@ -1,6 +1,7 @@
 package com.aegistree.core.engine
 
 import com.aegistree.core.ast.*
+import com.aegistree.spi.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

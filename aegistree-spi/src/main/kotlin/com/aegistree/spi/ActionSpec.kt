@@ -1,3 +1,3 @@
-package com.aegistree.core.ast
+package com.aegistree.spi
 
 data class ActionSpec(val actionType: String, val params: Map<String, Any?> = emptyMap())
