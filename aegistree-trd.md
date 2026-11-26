@@ -218,16 +218,16 @@ JevJudgmentNode   OutcomeLeaf: ALLOW
 
 ## 6. Declarative Strategy Schema (JSON)
 
-A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNode` is the DAG entry point.
+A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNode` is the DAG entry point. Strategies are versioned using [Semantic Versioning](https://semver.org) (`MAJOR.MINOR.PATCH`, e.g. `0.0.0`, `0.0.1`) — each edit creates a new immutable version, and publishing promotes a version to active.
 
 ```json
 {
   "schemaVersion": "aegistree/v1",
   "id": "risk_and_recommendation_v1",
+  "version": "0.0.1",
   "description": "Universal Hybrid Strategy combining Fast Rules with Jev System One Ambiguity Resolution",
   "metadata": {
-    "owner": "risk-engineering-team",
-    "environment": "production"
+    "owner": "risk-engineering-team"
   },
   "rootNode": {
     "id": "node_01_sanction_check",
@@ -306,9 +306,201 @@ A strategy is a JSON document persisted as a PostgreSQL `jsonb` column. `rootNod
 }
 ```
 
-## 7. Core Kotlin AST & Jev Client Implementation
+## 7. PostgreSQL Schema
 
-### 7.1 AST & Context Data Models
+Strategies and their versions are persisted in PostgreSQL. The DAG itself is stored as `jsonb`; versions are immutable and use semantic versioning.
+
+| Table | Purpose |
+|---|---|
+| `strategies` | One row per strategy (stable identity + metadata). |
+| `strategy_versions` | Immutable point-in-time snapshots of a strategy's JSON DAG. |
+
+### `strategies`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `slug` | `text` | Unique, human-readable handle for invocation |
+| `name` | `text` | Display name |
+| `description` | `text` | Optional |
+| `owner` | `text` | Owning team/person |
+| `status` | `text` | `DRAFT` \| `PUBLISHED` \| `ARCHIVED` |
+| `active_version` | `text` | Semantic version currently published (e.g. `0.0.1`) |
+| `created_at` | `timestamptz` | — |
+| `updated_at` | `timestamptz` | — |
+
+### `strategy_versions`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | `uuid` | Primary key |
+| `strategy_id` | `uuid` | FK → `strategies.id` |
+| `version` | `text` | Semantic version (`0.0.0`, `0.0.1`, …) |
+| `schema_json` | `jsonb` | Full DAG definition |
+| `checksum` | `text` | SHA-256 of `schema_json` for cache keying |
+| `status` | `text` | `DRAFT` \| `VALIDATED` \| `PUBLISHED` \| `SUPERSEDED` \| `REJECTED` |
+| `validation_report` | `jsonb` | Static validation errors/warnings |
+| `published_at` | `timestamptz` | Set when published |
+| `created_at` | `timestamptz` | — |
+| `created_by` | `text` | — |
+
+**Constraints:** `UNIQUE (strategy_id, version)` — versions are immutable and monotonic.
+
+**Lifecycle:** creating a strategy writes a `0.0.0` draft; each edit creates the next patch/minor version as a new draft; publishing promotes a version to `PUBLISHED` and marks the previous active version `SUPERSEDED`.
+
+```
+DRAFT ──validate──► VALIDATED ──publish──► PUBLISHED ──new version──► SUPERSEDED
+  │                      │                                          │
+  └──────reject──────────┘                                          └──archive──► ARCHIVED
+```
+
+## 8. REST API Specification
+
+Management endpoints are authenticated with OAuth 2.0 / OIDC; the evaluation endpoint uses an API key.
+
+| Method | Path | Purpose | Auth |
+|---|---|---|---|
+| `POST` | `/api/v1/strategies` | Create a new strategy (draft `0.0.0`) | OAuth |
+| `GET` | `/api/v1/strategies` | List strategies | OAuth |
+| `GET` | `/api/v1/strategies/{id}` | Get strategy (latest or `?version=`) | OAuth |
+| `PUT` | `/api/v1/strategies/{id}` | Edit strategy → new draft version | OAuth |
+| `POST` | `/api/v1/strategies/{id}/validate` | Run static validation | OAuth |
+| `POST` | `/api/v1/strategies/{id}/publish` | Publish a version (default latest draft) | OAuth |
+| `GET` | `/api/v1/strategies/{id}/versions` | List versions | OAuth |
+| `GET` | `/api/v1/strategies/{id}/versions/{version}` | Get a specific version | OAuth |
+| `POST` | `/api/v1/strategies/{id}/archive` | Archive a strategy | OAuth |
+| `POST` | `/api/v1/evaluate` | Evaluate a payload against a strategy | API key |
+
+### Create strategy
+
+`POST /api/v1/strategies`
+
+**Request**
+
+```json
+{
+  "name": "Risk & AML Screening",
+  "description": "Optional description",
+  "owner": "risk-engineering-team",
+  "schema": { "schemaVersion": "aegistree/v1", "rootNode": {} }
+}
+```
+
+**Response `201 Created`**
+
+```json
+{
+  "strategyId": "6f8c…",
+  "slug": "risk-aml-screening",
+  "version": "0.0.0",
+  "status": "DRAFT",
+  "createdAt": "2026-11-26T10:00:00Z"
+}
+```
+
+### Edit strategy (new draft version)
+
+`PUT /api/v1/strategies/{id}`
+
+**Request** — same shape as create (`schema` required; `name`/`description`/`owner` optional).
+
+**Response `200 OK`**
+
+```json
+{
+  "version": "0.0.1",
+  "status": "DRAFT",
+  "checksum": "sha256:…",
+  "updatedAt": "2026-11-26T10:05:00Z"
+}
+```
+
+### Validate strategy
+
+`POST /api/v1/strategies/{id}/validate`
+
+**Request** — optional `schema` override (defaults to latest draft).
+
+**Response `200 OK`**
+
+```json
+{
+  "valid": false,
+  "errors": [
+    { "code": "CYCLE_DETECTED", "message": "DAG contains a cycle", "nodeId": "node_x", "path": "rootNode.onMatch" },
+    { "code": "MISSING_UNCERTAIN", "message": "JevJudgmentNode lacks onUncertain", "nodeId": "node_jev" }
+  ]
+}
+```
+
+### Publish strategy
+
+`POST /api/v1/strategies/{id}/publish`
+
+**Request** — `{ "version": "0.0.1" }` (optional; defaults to latest validated draft).
+
+**Response `200 OK`**
+
+```json
+{
+  "publishedVersion": "0.0.1",
+  "publishedAt": "2026-11-26T10:10:00Z",
+  "status": "PUBLISHED"
+}
+```
+
+### List versions
+
+`GET /api/v1/strategies/{id}/versions`
+
+**Response `200 OK`**
+
+```json
+{
+  "items": [
+    { "version": "0.0.1", "status": "PUBLISHED", "checksum": "sha256:…", "publishedAt": "…" },
+    { "version": "0.0.0", "status": "SUPERSEDED", "checksum": "sha256:…", "publishedAt": "…" }
+  ]
+}
+```
+
+### Evaluate
+
+`POST /api/v1/evaluate`
+
+**Request**
+
+```json
+{
+  "strategyRef": { "slug": "risk-aml-screening", "version": "0.0.1" },
+  "payload": { "accountNumber": "IR1234567890123456789012", "amount": 15000.00 },
+  "context": { "summary": "New account, high-value transfer" },
+  "options": { "trace": true, "shadow": false }
+}
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "traceId": "c4b912a7-f321-42ab-881c-0b9213ef2110",
+  "strategyId": "risk-aml-screening",
+  "version": "0.0.1",
+  "verdict": {
+    "outcome": "CHALLENGE",
+    "reasonCode": "RISK_JEV_HIGH",
+    "metadata": { "riskLevel": "HIGH" },
+    "actions": [
+      { "actionType": "STEP_UP_AUTHENTICATION", "params": { "authType": "HARDWARE_TOKEN_OR_BIOMETRIC" } }
+    ]
+  },
+  "trace": []
+}
+```
+
+## 9. Core Kotlin AST & Jev Client Implementation
+
+### 9.1 AST & Context Data Models
 
 ```kotlin
 package com.aegistree.core.ast
@@ -418,7 +610,7 @@ data class EvaluationVerdict(
 )
 ```
 
-### 7.2 TypeSafe AI Jev Client
+### 9.2 TypeSafe AI Jev Client
 
 ```kotlin
 package com.aegistree.jev.client
@@ -491,7 +683,7 @@ class ResilientJevClient(
 }
 ```
 
-### 7.3 Core Recursive Coroutine Evaluation Engine
+### 9.3 Core Recursive Coroutine Evaluation Engine
 
 ```kotlin
 package com.aegistree.core.engine
@@ -642,9 +834,9 @@ class TreeExecutionEngine(
 }
 ```
 
-## 8. Strategy Lifecycle, Static Validation, Shadow Testing & Observability
+## 10. Strategy Lifecycle, Static Validation, Shadow Testing & Observability
 
-### 8.1 Compile-Time Static Validation
+### 10.1 Compile-Time Static Validation
 
 Before a strategy tree is compiled into an active `AtomicReference` slot, the `aegistree-cli` engine runs:
 
@@ -675,7 +867,7 @@ Submission Strategy Registry
 - **Unreachable Branch Identification** — detects dead paths and unreachable subtrees.
 - **Fallback Handler Enforcer** — every `JevJudgmentNode` must define an `onUncertain` target.
 
-### 8.2 Shadow / Canary Evaluation Mode
+### 10.2 Shadow / Canary Evaluation Mode
 
 ```
 Incoming Production Request
@@ -697,7 +889,7 @@ Emit Verdict       Suppress ActionSpecs
 
 During shadow execution, the engine evaluates both the active baseline and the candidate shadow strategy. Shadow nodes run identical logic, but their `ActionSpec` side-effects are suppressed.
 
-### 8.3 Observability & Telemetry
+### 10.3 Observability & Telemetry
 
 AegisTree exports real-time stats via OpenTelemetry and Micrometer.
 
@@ -730,7 +922,15 @@ AegisTree exports real-time stats via OpenTelemetry and Micrometer.
 }
 ```
 
-### 8.4 Open-Source Development Roadmap
+**How to view the telemetry:**
+
+| Signal | Backend | How you look at it |
+|---|---|---|
+| **Traces** | OpenTelemetry Collector → **Jaeger** or **Grafana Tempo** | Open the backend UI and paste a `traceId` (returned in every evaluate response and audit log) to see the full DAG path with per-node latencies. |
+| **Metrics** | **Prometheus** (scrapes) + **Grafana** (dashboards) | Query `aegistree_engine_eval_duration_seconds`, `aegistree_jev_confidence_distribution`, and `aegistree_shadow_divergence_total`. |
+| **Logs** | **Loki** (or any log aggregator) | Structured JSON audit logs ship to stdout, are collected, and correlated with traces via `traceId`. |
+
+### 10.4 Open-Source Development Roadmap
 
 | Phase | Deliverables |
 |---|---|
